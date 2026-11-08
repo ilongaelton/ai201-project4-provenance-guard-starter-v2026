@@ -42,63 +42,77 @@ Two things worth knowing before you pick numbers:
   a **miss**.
 
 ---
-## 1.
+> **How these were written:** drafted with Claude Code after the service was
+> built and after the first calibration runs, not before (see README → How I
+> Used AI). The targets are set by what a writer on the receiving end would
+> accept, not by what the calibration showed would pass. Criterion 1 is known to
+> be at risk: a plain, second-language-style paragraph already scored as AI.
 
-<!-- Your criterion. It must name a number. -->
+## 1. Few false accusations on my own writing
 
-
+Of 10 pieces of my own writing (each 60–300 words), **at most 1** is labelled
+high-confidence AI, and this holds in **every one of 3 trials**.
 
 **Why this target:**
-
-
+On a writing site a wrong accusation costs the writer far more than a missed
+detection costs the site. 1 in 10 is the most I'd accept if it were my own
+work being judged, and it has to hold every time, because a writer only gets
+judged once.
 
 ---
 
-## 2.
+## 2. Clearly-AI and clearly-human text score far apart
 
-<!-- Your criterion. -->
-
-
+Across 5 texts I'm confident are AI-generated and 5 I'm confident are
+human-written, the **mean combined score of the AI set is at least 0.30
+higher** than the mean of the human set, in each of 3 trials.
 
 **Why this target:**
-
-
+0.30 is the width of my "unsure" band (0.40–0.70). If the typical AI text and
+the typical human text aren't at least that far apart, they can't land on
+opposite sides of the band, and the labels are doing nothing a coin couldn't.
 
 ---
 
-## 3.
+## 3. Every label is reachable, and lands where intended
 
-<!-- Your criterion. -->
-
-
+Using 9 coverage inputs (3 meant to be clearly human, 3 borderline, 3 clearly
+AI), **each of the three labels appears at least once**, and **at least 2 of
+the 3 inputs in each group get their intended label**, in each of 3 trials.
 
 **Why this target:**
-
-
+A label that can't be reached is a gap in the ranges. Requiring 2 of 3 per
+group also checks the ranges are in roughly the right place, not just that
+some score somewhere happens to hit each band.
 
 ---
 
-## 4.
+## 4. Appeals always change status and are always recorded
 
-<!-- Your criterion. -->
-
-
+For **5 of 5** appeals sent with a real `content_id`, the response is 200 with
+`status: "under_review"`, and `GET /log` shows an appeal entry for that id
+after the original decision. For **3 of 3** appeals with a made-up id, the
+response is 404 and **no** log entry is written.
 
 **Why this target:**
-
-
+The appeal is the only thing between a wrong accusation and nothing at all,
+so anything less than every time is a failure. The made-up-id check is there
+because a typo that fails silently looks like a working appeal to the writer.
 
 ---
 
-## 5.
+## 5. Bad input never crashes the service
 
-<!-- Your criterion. -->
-
-
+**6 of 6** malformed requests (empty `text`, missing `text`, `text: null`,
+`text` that isn't a string, 50,000 words of text, and a body that isn't a JSON
+object) get a 4xx response with an `error` field, **0** get a 5xx, each writes
+a `rejected` entry to the audit log, and each answers within 5 seconds.
 
 **Why this target:**
-
-
+A crash on malformed input is one of the most common real failures, and an
+oversized input that runs the model for a minute is an easy way to tie the
+service up. A refusal that leaves no log entry is invisible, so the trace
+counts as part of passing.
 
 ---
 
