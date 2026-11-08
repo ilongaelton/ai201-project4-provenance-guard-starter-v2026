@@ -18,8 +18,9 @@ doesn't, it's the service itself.
 Routes:
 
     POST /ping        the worked example. Already works. Don't edit it
-    POST /submit      ← YOU BUILD THIS (Milestone 3, 4, 5)
-    POST /appeal      ← YOU BUILD THIS (Milestone 5)
+    POST /submit      text + creator_id in -> guess, confidence, label out
+    POST /appeal      content_id + reasoning in -> status moves to under_review
+    GET  /content/<id>  one item's current status (stretch)
     GET  /log         the audit log. Already works
     GET  /health      is the service up, and is the model loaded
 """
@@ -30,6 +31,9 @@ from flask import Flask, jsonify, request
 
 import audit
 import config
+import detector
+import scoring
+import stylometry
 
 app = Flask(__name__)
 
@@ -148,98 +152,197 @@ def health():
     })
 
 
-# ── YOU BUILD THIS ────────────────────────────────────────────────────────────
+# ── The service ────────────────────────────────────────────────────────────
 
 @app.post("/submit")
 # @limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
 def submit():
     """
     Take a piece of text, decide about it, log the decision, answer.
-    ← TODO — Milestones 3, 4 and 5
 
     Expects JSON:
         {"text": "...", "creator_id": "..."}
 
-    Should return JSON with, at minimum:
-        {"content_id": "...", "guess": "...", "confidence": 0.0, "label": "...",
-         "model_score": 0.0, "style_score": 0.0}
+    Returns 200 with:
+        {"content_id", "creator_id", "guess", "confidence", "label",
+         "model_score", "style_score", "status"}
 
-    ⚠️ **Both signal scores go in the response, not just the log.** Unit 8's
-    `run_attacks.py` and `run_eval.py` read `model_score` and `style_score`
-    straight off this response and put them in your reports. Leave them out and
-    every row of next unit's evidence says `null` — which is exactly the
-    diagnostic you need to name a stage and a mechanism. You do not want to
-    find that out after running the attack set.
+    `confidence` is the combined 0-1 score from scoring.combine_signals:
+    how strongly the evidence points to AI (0 = confidently human,
+    1 = confidently AI).
 
-    ─────────────────────────────────────────────────────────────────────────
-    Build it in three passes. Do not skip ahead — the ordering is how you tell
-    a broken route from a broken signal.
+    Bad input never reaches the signals. It gets a 4xx with an `error` code
+    and a plain-English `message`, and a `rejected` entry in the audit log:
 
-    **Milestone 3 — the route answers.**
-      1. Return a hardcoded response. Confirm `curl` gets it back before you
-         add any logic at all.
-      2. Then pull `text` and `creator_id` out of the payload.
-      3. Then call ONE signal — `detector.model_signal(text)` — and put the
-         real number in. Leave confidence and label as placeholders.
-      4. Log every submission with `audit.log_decision(...)`. The content_id
-         matters: `/appeal` needs it, and a student who skips it rebuilds this
-         whole flow later.
-
-    **Milestone 4 — the second signal and the score.**
-      5. Add `stylometry.style_signal(text)`.
-      6. Combine them with `scoring.combine_signals(...)`.
-      7. Log BOTH signal scores alongside the combined one, and put them in the
-         response too. Next unit you can't diagnose anything without them.
-
-    **Milestone 5 — the label.**
-      8. `scoring.score_to_label(...)` and put the real label in the response.
-
-    ─────────────────────────────────────────────────────────────────────────
-    Worth deciding early, because unit 8's attack set will decide it for you:
-    what should this do when `text` is missing, empty, or enormous? A crash on
-    a malformed input is one of the most common real failures there is.
+        400 invalid_json       body isn't a JSON object
+        400 missing_text       no `text`, or it isn't a string
+        400 empty_text         `text` is only whitespace
+        400 missing_creator    no `creator_id`, or it isn't a non-empty string
+        413 text_too_long      more than MAX_CHARS characters
+        422 text_too_short     fewer than MIN_WORDS words
+        503 detector_unavailable   the model couldn't be loaded
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _reject("unknown", "invalid_json",
+                       'Send a JSON object like {"text": "...", "creator_id": "..."}.', 400)
 
-    # TODO: delete this and build the route.
+    creator_id = payload.get("creator_id")
+    has_creator = isinstance(creator_id, str) and bool(creator_id.strip())
+    creator_for_log = creator_id if has_creator else "unknown"
+    text = payload.get("text")
+
+    if not isinstance(text, str):
+        return _reject(creator_for_log, "missing_text",
+                       "The request needs a `text` field containing the writing to check.", 400)
+    if not text.strip():
+        return _reject(creator_for_log, "empty_text",
+                       "The `text` field is empty. There's nothing to check.", 400)
+    if not has_creator:
+        return _reject("unknown", "missing_creator",
+                       "The request needs a `creator_id` field saying who wrote this.", 400)
+    if len(text) > config.MAX_CHARS:
+        return _reject(creator_id, "text_too_long",
+                       f"That's {len(text):,} characters. The limit is {config.MAX_CHARS:,}. "
+                       f"Try submitting it in parts.", 413, text_length=len(text))
+
+    n_words = len(stylometry.words(text))
+    if n_words < config.MIN_WORDS:
+        return _reject(creator_id, "text_too_short",
+                       f"That's {n_words} words. We need at least {config.MIN_WORDS} "
+                       f"to say anything useful about it.", 422, text_length=len(text))
+
+    try:
+        model_score = detector.model_signal(text)
+    except detector.DetectorUnavailable as exc:
+        return _reject(creator_id, "detector_unavailable",
+                       "The checker isn't available right now. Please try again later.",
+                       503, detail=str(exc)[:200])
+    except ValueError:
+        return _reject(creator_id, "text_too_short",
+                       "That text is too short to check. A few sentences at least.", 422)
+
+    style_score = stylometry.style_signal(text)
+    combined = scoring.combine_signals(model_score, style_score)
+    guess, label = scoring.score_to_label(combined)
+
+    content_id = uuid.uuid4().hex[:12]
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=combined,
+        label=label,
+        status="decided",
+        text_length=len(text),
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /submit isn't built yet — see the TODO in app.py.",
-        "you_sent": {
-            "text_length": len(payload.get("text", "")),
-            "creator_id": payload.get("creator_id"),
-        },
-    }), 501
+        "content_id": content_id,
+        "creator_id": creator_id,
+        "guess": guess,
+        "confidence": combined,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+        "status": "decided",
+    })
+
+
+def _reject(creator_id, reason, message, status_code, **extra):
+    """Refuse a request, and leave a trace of it in the audit log."""
+    audit.log_rejection(creator_id=creator_id, reason=reason, http_status=status_code, **extra)
+    return jsonify({"error": reason, "message": message}), status_code
+
+
+def _current_state(content_id):
+    """(decision entry, latest status) for a content_id, or (None, None)."""
+    entries = audit.entries_for(content_id)
+    decision = next((e for e in entries if e.get("event") is None and e.get("guess")), None)
+    if decision is None:
+        return None, None
+    return decision, entries[-1].get("status", decision.get("status"))
 
 
 @app.post("/appeal")
 def appeal():
     """
-    A writer says you got it wrong. ← TODO — Milestone 5
+    A writer says we got it wrong.
 
     Expects JSON:
         {"content_id": "...", "reasoning": "..."}
 
-    Should:
-      1. Check the content_id actually exists — `audit.entries_for(id)` tells
-         you. A typo here fails silently and looks like a broken endpoint,
-         which is the single most common way this milestone eats an hour.
-      2. Record the appeal with `audit.log_appeal(...)`, which moves the item
-         to `under_review`.
-      3. Confirm to the writer. No automatic re-checking needed.
+    Records the appeal next to the original decision in the audit log, moves
+    the item to `under_review`, and confirms. No automatic re-checking.
 
-    This is the smallest endpoint in the project and the one that matters most
-    to the person on the other end. It's the only thing standing between a
-    wrong accusation and nothing at all.
+        400 invalid_json / missing_content_id / missing_reasoning
+        404 unknown_content_id     no decision with that id
+        409 already_under_review   this item already has an open appeal
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid_json",
+                        "message": 'Send a JSON object like {"content_id": "...", "reasoning": "..."}.'}), 400
 
-    # TODO: delete this and build the route.
+    content_id = payload.get("content_id")
+    reasoning = payload.get("reasoning")
+
+    if not isinstance(content_id, str) or not content_id.strip():
+        return jsonify({"error": "missing_content_id",
+                        "message": "The request needs the `content_id` you got back when you submitted."}), 400
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return jsonify({"error": "missing_reasoning",
+                        "message": "Tell us in a sentence or two why you think the result is wrong."}), 400
+
+    content_id = content_id.strip()
+    decision, status = _current_state(content_id)
+    if decision is None:
+        return jsonify({"error": "unknown_content_id",
+                        "message": f"We couldn't find a submission with id '{content_id}'. "
+                                   f"Check it matches the content_id from your submission."}), 404
+    if status == "under_review":
+        return jsonify({"error": "already_under_review",
+                        "content_id": content_id,
+                        "status": status,
+                        "message": "This item is already waiting for a person to review it."}), 409
+
+    audit.log_appeal(content_id=content_id,
+                     creator_id=decision.get("creator_id", "unknown"),
+                     reasoning=reasoning.strip()[:5000])
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /appeal isn't built yet — see the TODO in app.py.",
-        "you_sent": payload,
-    }), 501
+        "content_id": content_id,
+        "status": "under_review",
+        "original_guess": decision.get("guess"),
+        "original_confidence": decision.get("combined_score"),
+        "message": "Thanks. Your appeal has been recorded and a person will review "
+                   "this item. Until then it is marked as under review, not as AI-written.",
+    })
+
+
+@app.get("/content/<content_id>")
+def get_content(content_id):
+    """One item's current status and its history (stretch feature)."""
+    decision, status = _current_state(content_id)
+    if decision is None:
+        return jsonify({"error": "unknown_content_id",
+                        "message": f"No submission with id '{content_id}'."}), 404
+    appeals = [e for e in audit.entries_for(content_id) if e.get("event") == "appeal"]
+    return jsonify({
+        "content_id": content_id,
+        "creator_id": decision.get("creator_id"),
+        "status": status,
+        "guess": decision.get("guess"),
+        "confidence": decision.get("combined_score"),
+        "label": decision.get("label"),
+        "model_score": decision.get("model_score"),
+        "style_score": decision.get("style_score"),
+        "submitted_at": decision.get("timestamp"),
+        "appeals": [{"timestamp": a.get("timestamp"), "reasoning": a.get("reasoning")}
+                    for a in appeals],
+    })
 
 
 # ── Already works ─────────────────────────────────────────────────────────────
