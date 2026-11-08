@@ -48,14 +48,34 @@ DETECTOR_MAX_TOKENS = 400
 
 
 # ─── Scoring (Milestone 4) ───────────────────────────────────────────────────
-# How much each signal counts toward the combined score.
+# The combining rule lives in scoring.py::combine_signals. In words:
 #
-# ⚠️ These are placeholders. Milestone 4 asks you to write your combining rule
-# down BEFORE you code it, and to put the numbers in your README. Whatever you
-# decide, it goes here.
+#   1. Weighted average: 0.6 × model signal + 0.4 × style signal.
+#      The model signal gets more weight because it separates clearly-AI and
+#      clearly-human text further apart on the calibration inputs; the style
+#      signal is easy to move on purpose (typos, chopped sentences).
+#   2. Disagreement rule: if the two signals are more than DISAGREEMENT_GAP
+#      apart, the average is pulled halfway back toward 0.5. Two methods that
+#      contradict each other is uncertainty, and it should read as "unsure",
+#      not as a confident verdict carried by whichever signal is louder.
 
-WEIGHT_MODEL_SIGNAL = 0.5
-WEIGHT_STYLE_SIGNAL = 0.5
+WEIGHT_MODEL_SIGNAL = 0.6
+WEIGHT_STYLE_SIGNAL = 0.4
+
+DISAGREEMENT_GAP = 0.35       # |model − style| above this counts as a split
+DISAGREEMENT_SHRINK = 0.5     # how much of the distance from 0.5 survives a split
+
+# ─── The style signal's internals (stylometry.py) ────────────────────────────
+# Each raw measure is mapped to 0–1 AI-ness by a logistic curve:
+#   (midpoint, scale) — at the midpoint the measure scores 0.5; `scale` sets how
+#   quickly it moves either side. All three raw measures point "higher = human".
+
+STYLE_SPREAD_CURVE = (0.35, 0.10)   # sentence-length coefficient of variation
+STYLE_TTR_CURVE = (0.85, 0.05)      # moving-average type-token ratio
+STYLE_PUNCT_CURVE = (0.05, 0.02)    # expressive punctuation per word × variety
+
+# Relative weight of (spread, word variety, punctuation) inside the style signal.
+STYLE_WEIGHTS = (0.6, 0.2, 0.2)
 
 
 # ─── Thresholds (Milestone 5) ────────────────────────────────────────────────
@@ -71,8 +91,16 @@ WEIGHT_STYLE_SIGNAL = 0.5
 # getting through. There is no setting that avoids the trade — only settings
 # that decide who pays for it.
 
-HUMAN_THRESHOLD = 0.35
-AI_THRESHOLD = 0.65
+HUMAN_THRESHOLD = 0.40
+AI_THRESHOLD = 0.70
+
+# Asymmetric on purpose: the AI band starts 0.20 above the midpoint, the human
+# band only 0.10 below it. Accusing a real writer costs more than missing some
+# AI text, so it takes more evidence to say "AI" than to say "person".
+
+# Input limits for POST /submit.
+MIN_WORDS = 20          # below this neither signal means anything
+MAX_CHARS = 20000       # ~3,500 words; beyond this is refused, not truncated
 
 # ⚠️ One thing that catches people out in Milestone 5. A weighted average can
 # only land between its two inputs — so while `style_signal` is still the stub
