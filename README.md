@@ -266,24 +266,32 @@ I used Claude Code (an AI coding assistant) for the implementation. I gave it th
 
 ## Rate Limiting
 
-**My limits:** ___ per minute, ___ per day
+**My limits:** 6 per minute, 60 per day (`config.py`: `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_PER_DAY`; decorator on `app.py::submit`)
 
 **Why those numbers and not others:**
-<!-- Think about two people: a real writer submitting their own work a few
-     times an hour, and a script sending a thousand variations to map your
-     thresholds. Your numbers have to be liveable for the first and hostile to
-     the second. -->
 
-**What a caller counts as:** <!-- per address, or per creator_id? They fail
-differently — one script can look like a thousand callers, and one household
-can look like one. -->
+- **A real writer** checks a piece, edits it, and checks again. Even a fast "fix a sentence, resubmit" loop rarely goes past three or four in a minute, so 6 leaves headroom. 60 a day covers someone checking every draft of several pieces. Nobody needs 200.
+- **A script mapping my thresholds** needs hundreds to thousands of variations to find where 0.40 and 0.70 sit. At 60 a day per identity, 1,000 probes take 17 days. At the starter's 10/200 it would take 5. Going lower than 6/minute starts to catch a writer who pastes, spots a typo and resubmits straight away, so I stopped at 6.
+- What it doesn't stop: a script that makes up a new `creator_id` for every request. See below.
+
+**What a caller counts as:** The `creator_id` in the body (`app.py::rate_limit_key`), falling back to the IP address when there isn't a usable one. Per-creator means one household sharing an address doesn't share a budget. The cost is that `creator_id` is self-reported, so one script inventing a thousand ids looks like a thousand writers and is never limited. A real deployment would key on an authenticated account and keep a per-address ceiling as a backstop.
 
 **The run of status codes when I pushed past it:**
 
 <!-- python run_attacks.py --flood 15 -->
 
 ```
+$ python run_attacks.py --flood 15
+200 200 200 200 200 200 429 429 429 429 429 429 429 429 429
 
+9 of 15 were rate limited.
+Wrote results\flood_2026-11-12_1426.md
+```
+
+Each 429 left a trace in `logs/audit.jsonl`:
+
+```json
+{"timestamp": "2026-11-12T19:26:49+00:00", "creator_id": "flood_tester", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "6 per 1 minute"}
 ```
 
 ---

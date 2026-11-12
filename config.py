@@ -120,10 +120,15 @@ MAX_CHARS = 20000       # ~3,500 words; beyond this is refused, not truncated
 # an hour, and a script sending a thousand variations to map your thresholds.
 # Your README has to say why your numbers and not others.
 
-RATE_LIMITING_ENABLED = os.getenv("AI201_RATE_LIMITS", "0") == "1"
+RATE_LIMITING_ENABLED = True
 
-RATE_LIMIT_PER_MINUTE = 10
-RATE_LIMIT_PER_DAY = 200
+# Counted per creator_id (falls back to the caller's address when there isn't
+# one). 6 a minute leaves room for a writer resubmitting after a few quick
+# edits; 60 a day is far more than anyone checks their own work. A script
+# mapping the thresholds with ~1,000 variations gets 60 a day per creator_id,
+# so one identity would take over two weeks.
+RATE_LIMIT_PER_MINUTE = 6
+RATE_LIMIT_PER_DAY = 60
 
 # Flask-Limiter warns loudly without this. In-memory is right for one laptop
 # and wrong for anything real — a restart forgets every count, and two copies
