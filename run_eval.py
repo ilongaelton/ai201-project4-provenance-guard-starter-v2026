@@ -25,6 +25,7 @@ import argparse
 import datetime as dt
 import json
 import sys
+import time
 from pathlib import Path
 
 import config
@@ -60,10 +61,95 @@ def bodies_for(scenario):
 
 def describe(body):
     """A short, readable note of what was sent — for the report."""
-    if set(body) == {"text", "creator_id"} and isinstance(body.get("text"), str):
+    if (isinstance(body, dict) and set(body) == {"text", "creator_id"}
+            and isinstance(body.get("text"), str)):
         text = body["text"]
         return text[:70] if text else "(empty text)"
     return json.dumps(body)[:120]
+
+
+# ── Added in unit 8 for criteria 4 and 5 ──────────────────────────────────────
+# Criterion 5 needs response time and proof a `rejected` entry was written.
+# Criterion 4 needs a submit -> appeal sequence. Test tooling only: nothing in
+# the service changes.
+
+LOG_FIELDS = ("event", "status", "reason", "content_id", "guess", "combined_score")
+
+
+def read_log(requests, url, limit=None):
+    params = {"limit": limit} if limit else None
+    return requests.get(f"{url}/log", params=params, timeout=30).json().get("entries", [])
+
+
+def send_submit(requests, args, body):
+    """POST one body to /submit; record the reply, the time taken, and the log line it left."""
+    preview = describe(body)
+    start = time.perf_counter()
+    try:
+        response = requests.post(f"{args.url}/submit", json=body, timeout=args.timeout)
+        elapsed = round(time.perf_counter() - start, 2)
+        payload = response.json() if response.content else {}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": None, "error": f"{type(exc).__name__}: {exc}", "sent": preview,
+                "elapsed_s": round(time.perf_counter() - start, 2)}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    last = (read_log(requests, args.url, limit=1) or [None])[-1]
+    return {
+        "status": response.status_code,
+        "error": payload.get("error"),
+        "content_id": payload.get("content_id"),
+        "guess": payload.get("guess"),
+        "confidence": payload.get("confidence"),
+        "model_score": payload.get("model_score"),
+        "style_score": payload.get("style_score"),
+        "label": payload.get("label"),
+        "elapsed_s": elapsed,
+        "log_entry": {k: last.get(k) for k in LOG_FIELDS if k in last} if last else None,
+        "sent": preview,
+    }
+
+
+def run_appeals(requests, args, scenario, trial):
+    """Submit, appeal each real content_id, then appeal made-up ids."""
+    spec = scenario["appeals"]
+    results = []
+
+    for i, text in enumerate(spec["texts"], 1):
+        sub = send_submit(requests, args, {"text": text, "creator_id": f"eval_appeal_{i}"})
+        content_id = sub.get("content_id")
+        reply = requests.post(f"{args.url}/appeal", timeout=args.timeout, json={
+            "content_id": content_id,
+            "reasoning": f"Eval trial {trial}: I wrote this myself.",
+        })
+        body = reply.json() if reply.content else {}
+        events = [e.get("event") or e.get("status") for e in read_log(requests, args.url)
+                  if e.get("content_id") == content_id]
+        results.append({
+            "kind": "real_id",
+            "content_id": content_id,
+            "submit_status": sub.get("status"),
+            "status": reply.status_code,
+            "appeal_status_field": body.get("status"),
+            "log_events_for_id": events,
+            "sent": describe({"text": text, "creator_id": "x"}),
+        })
+
+    for fake in spec["fake_ids"]:
+        before = len(read_log(requests, args.url))
+        reply = requests.post(f"{args.url}/appeal", timeout=args.timeout,
+                              json={"content_id": fake, "reasoning": "Eval: made-up id."})
+        after = len(read_log(requests, args.url))
+        body = reply.json() if reply.content else {}
+        results.append({
+            "kind": "fake_id",
+            "content_id": fake,
+            "status": reply.status_code,
+            "error": body.get("error"),
+            "log_entries_written": after - before,
+        })
+    return results
 
 
 def main():
@@ -112,29 +198,15 @@ def main():
 
         trials = []
         for trial in range(1, args.trials + 1):
-            results = []
-            for i, body in enumerate(bodies_for(scenario), 1):
-                preview = describe(body)
-                try:
-                    response = requests.post(f"{args.url}/submit", json=body,
-                                             timeout=args.timeout)
-                    payload = response.json() if response.content else {}
-                    results.append({
-                        "status": response.status_code,
-                        "guess": payload.get("guess"),
-                        "confidence": payload.get("confidence"),
-                        "model_score": payload.get("model_score"),
-                        "style_score": payload.get("style_score"),
-                        "label": payload.get("label"),
-                        "sent": preview,
-                    })
-                except Exception as exc:  # noqa: BLE001
-                    results.append({"status": None, "error": f"{type(exc).__name__}: {exc}",
-                                    "sent": preview})
+            if scenario.get("appeals"):
+                results = run_appeals(requests, args, scenario, trial)
+            else:
+                results = [send_submit(requests, args, body) for body in bodies_for(scenario)]
 
             trials.append(results)
-            guesses = [r.get("guess") or "—" for r in results]
-            print(f"  trial {trial}: {', '.join(guesses)}")
+            marks = [f"{r.get('status')}:{r.get('guess') or r.get('error') or '—'}"
+                     for r in results]
+            print(f"  trial {trial}: {', '.join(marks)}")
 
         rows.append({"scenario": scenario, "trials": trials})
 
