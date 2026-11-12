@@ -322,22 +322,55 @@ whose work got caught by it:
 
 <!-- Your five criteria across three trials. `run_eval.py --label before`. -->
 
+**Before** — `results/run_2026-11-12_1438_before.md`, produced by `run_eval.py::main` against `app.py::submit` (`scoring.py::combine_signals`, `scoring.py::score_to_label`). Inputs are in `scenarios.py`.
+
 | Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
 |---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |
+| 1. Human writing flagged as AI | ≤ 1 of 10 labelled AI | 0/10 | 0/10 | 0/10 | MET* |
+| 2. AI vs human score gap | AI mean − human mean ≥ 0.30 | 0.48 | 0.48 | 0.48 | MET |
+| 3. Labels reachable and correctly placed | all 3 labels seen, ≥ 2 of 3 per group | 2 / **1** / 2 | 2 / **1** / 2 | 2 / **1** / 2 | **MISSED** |
+| 4. Appeals change status and are logged | 5/5 real, 3/3 fake → 404 + no entry | 5/5, 3/3 | 5/5, 3/3 | 5/5, 3/3 | MET |
+| 5. Bad input → 4xx, logged, < 5 s | 6 of 6 | 6/6 | 6/6 | 6/6 | MET |
 
-**Real output from one trial**, pasted as text, naming the file and function
-that produced it:
+All three trials are identical, score for score. Neither signal is random (GPT-2 perplexity is deterministic, the style signal is arithmetic), so that's the expected result, not a skipped step.
+
+**How I decided each verdict:**
+
+1. **MET\*, with a weak test behind it.** 0 of 10 were labelled AI in every trial, and three landed in "unsure" (0.40, 0.44, 0.45). The asterisk: the ten texts are **not my own writing**. They're published human passages from Project Gutenberg, a substitution recorded under criterion 1 in `criteria.md`. Literary prose is the easy case for this detector. The plainest passage (Sherwood Anderson: short, flat sentences) scored highest, at 0.4547 with both signals at about 0.45. That's the same direction as the ESL false positive in the Sample Run. I wouldn't call this criterion settled until it's run on everyday writing.
+2. **MET.** AI mean 0.787, human mean 0.305, gap 0.48 against a target of 0.30, in all three trials. Means hide overlap, though: one AI text ("Reading books…") scored 0.631, inside the unsure band.
+3. **MISSED.** All three labels appeared, and the human and AI groups each got 2 of 3 right. The borderline group got **1 of 3** "unsure" in every trial. The target needs ≥ 2 in every group. Argued the other way: those borderline texts are AI drafts, so calling them "human" is arguably a missed detection rather than a mislabelled borderline. That isn't more generous, though. It's still a miss.
+4. **MET.** 5 of 5 appeals returned 200 and `under_review`, and the log shows `decided` then `appeal` for each id. 3 of 3 made-up ids returned 404 and wrote 0 log entries.
+5. **MET.** 6 of 6 returned a 4xx with an `error` code and left a `rejected` log entry. Slowest response: 0.03 s. The 50,000-word body is refused at `MAX_CHARS` before the model runs.
+
+**Real output from trial 1** (`run_eval.py::send_submit` / `run_eval.py::run_appeals`; `label` text shortened):
 
 ```json
+// Criterion 1: highest-scoring human passage (Anderson, Winesburg, Ohio)
+{"status": 200, "content_id": "3136afe00612", "guess": "unsure", "confidence": 0.4547, "model_score": 0.4535, "style_score": 0.4566, "label": "We can't tell whether this was written by a person or with a…", "elapsed_s": 0.51, "log_entry": {"status": "decided", "content_id": "3136afe00612", "guess": "unsure", "combined_score": 0.4547}, "sent": "The two Kings, Edward the father, and Tom the son, were not popular in"}
 
+// Criterion 2: lowest AI text, and the first human text
+{"status": 200, "content_id": "06aa53499c57", "guess": "unsure", "confidence": 0.6311, "model_score": 0.5881, "style_score": 0.6955, "sent": "Reading books provides numerous benefits for people of all ages. It ex"}
+{"status": 200, "content_id": "8993abcb81ce", "guess": "human", "confidence": 0.3083, "model_score": 0.2571, "style_score": 0.3852, "sent": "We sculled up to Walton, a rather large place for a riverside town. As"}
+
+// Criterion 3: the three borderline inputs (wanted: unsure)
+{"status": 200, "content_id": "a10e45723012", "guess": "unsure", "confidence": 0.4038, "model_score": 0.4838, "style_score": 0.2838, "sent": "Remote work has changed a lot about how teams operate. Some people lov"}
+{"status": 200, "content_id": "206f00a7ecc6", "guess": "human",  "confidence": 0.2484, "model_score": 0.3425, "style_score": 0.1073, "sent": "Learning a new language takes patience. Lots of it. Most learners star"}
+{"status": 200, "content_id": "7f76b3e32c76", "guess": "human",  "confidence": 0.3916, "model_score": 0.449,  "style_score": 0.3055, "sent": "Gardening is often described as relaxing, and for many people it is. B"}
+
+// Criterion 4: one real appeal, one made-up id
+{"kind": "real_id", "content_id": "143e23ef0569", "submit_status": 200, "status": 200, "appeal_status_field": "under_review", "log_events_for_id": ["decided", "appeal"]}
+{"kind": "fake_id", "content_id": "000000000000", "status": 404, "error": "unknown_content_id", "log_entries_written": 0}
+
+// Criterion 5: the 50,000-word body and the non-object body
+{"status": 413, "error": "text_too_long", "elapsed_s": 0.02, "log_entry": {"event": "rejected", "status": "rejected", "reason": "text_too_long"}}
+{"status": 400, "error": "invalid_json", "elapsed_s": 0.02, "log_entry": {"event": "rejected", "status": "rejected", "reason": "invalid_json"}, "sent": "[\"this\", \"is\", \"not\", \"an\", \"object\"]"}
 ```
 
 **Diagnoses**
+
+**Criterion 3 (MISSED): the stage is signal two, and the mechanism is that one fragment sentence reads as "human".** The three borderline inputs are AI drafts I roughed up by putting a two-to-four-word sentence ("Lots of it.", "Some people love it.") next to a 35–40-word one. My style signal gives sentence-length spread 0.6 of its weight, because calibration showed it's the only one of its three measures that separates the groups. A single fragment beside a long sentence sends the spread way up, so the style score drops to 0.11–0.31. The model signal also fell just under 0.5 (0.34–0.48), because the edits made the text a little less predictable. Both signals leaned human, so the gap stayed under 0.35 and the **combining rule's** disagreement clause never fired. The weighted average went straight through: 0.248 for "Learning a new language" and 0.392 for "Gardening". The second one misses only at the **label mapping**, 0.008 under `HUMAN_THRESHOLD = 0.40`. The first is a clear signal-two failure: a style score of 0.107 is the strongest "human" reading in the whole run, earned by one fragment.
+
+**Pattern:** the lowest style score in the whole run, 0.107, belongs to an AI draft, not to any of the ten human passages (the lowest of those is 0.158). One edited fragment made an AI text look more human, by sentence shape, than Kate Chopin. The style signal can be steered by sentence shape alone. That was already listed as its blind spot in Signals and Scoring; this is it measured. The attack-set diagnoses below will show whether the attacks hit the same weakness.
 
 <!-- For each miss AND each broken attack: the stage and the mechanism.
 
