@@ -120,6 +120,8 @@ One property of this rule: **a split can never produce the AI label.** After a s
 
 `scoring.py::score_to_label` checks `>= 0.70` first, then `<= 0.40`, and everything else is "unsure", so every score from 0 to 1 maps to exactly one label. The bands are deliberately asymmetric. The AI band starts 0.20 above the midpoint and the human band only 0.10 below it, because accusing a real writer costs more than missing some AI text. All three were reached through the live route: work email → human (0.08), casual note → unsure (0.48), generic AI paragraph → AI (0.78).
 
+> **Updated in unit 8:** `AI_THRESHOLD` is now **0.75**, so "unsure" is 0.40–0.75 and "high-confidence AI" is 0.75–1.00. The ranges above are as they were in unit 7. See The Improvement for why this changed and what it cost.
+
 **Why I worded the "unsure" one this way:** Someone reading it may well have written every word, so it says outright that it is *not* an accusation and that nothing has happened to their work. It says "plenty of genuine writing lands here" so the writer doesn't read it as a polite way of saying "AI". It offers a review as an option, not a demand. The AI label also says "it can be wrong" and points to the appeal, because my own calibration showed it is wrong for plain human writing.
 
 ---
@@ -259,6 +261,16 @@ I used Claude Code (an AI coding assistant) for the implementation. I gave it th
 - *What I asked for:* A combining rule for `scoring.py::combine_signals`, plus a check of whether the starter's detector settings fit my test texts.
 - *What came back:* With the starter's perplexity midpoint of 45, every human sample except two scored above 0.5 on the model signal. A plain weighted average would also have labelled a generic AI paragraph "AI" on the model signal alone (model 0.909, style 0.477).
 - *What I changed:* We compared midpoints of 45, 30 and 25 on the same 14 samples and chose 30 (steepness 2.0). At 30, Twain moved to "human" and nothing moved toward AI. We kept the disagreement rule (a gap over 0.35 pulls the score halfway to 0.5), knowing it lets that AI paragraph through as "unsure". That's deliberate: the same rule stops a single signal from accusing a human writer. The thresholds were left asymmetric (0.40 / 0.70) for the same reason.
+
+**Unit 8: testing with Claude Code**
+
+Claude Code turned on the rate limiter, wrote `scenarios.py`, extended `run_eval.py` (appeal sequences, response timing, a check that each refusal reached the log), and ran the flood test, the attack set and the criteria before and after. It also drafted the held/broke marks, the diagnoses and this write-up. Three moments where what came back had to change:
+
+- **My own writing.** Criterion 1 needs ten pieces of my writing, and I didn't supply them. Claude declined to write ten pieces and present them as mine. Instead it used ten public-domain passages from Project Gutenberg, picked by a fixed rule before scoring, and recorded the substitution under criterion 1 in `criteria.md`. Criterion 1's MET is weaker than it looks because of this.
+- **A claim that didn't survive the data.** The first draft of the criterion 3 diagnosis said the two lowest style scores in the run both came from texts with a short fragment. Checking the numbers showed three human passages scored lower than the second one, so the sentence was rewritten to the claim the data does support.
+- **The fix.** The attack diagnoses pointed mostly at signal two, so fixing it was the obvious move. An offline what-if on the before-run data showed that fix would have accused six human writers, so the change became the threshold instead. Separately, the first "after" attack run hit a stale server still running the old threshold. FP05 still coming back `ai` gave it away, and the run was redone (see The Improvement).
+
+The diagnoses above were drafted by Claude from the logged scores and the attack texts.
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
@@ -466,38 +478,82 @@ All three trials are identical, score for score. Neither signal is random (GPT-2
 
 ## The Improvement
 
-**What I changed:**
+**What I changed:** One line in `config.py`: `AI_THRESHOLD` from **0.70 to 0.75**. The high-confidence-AI band is now 0.75–1.00, and the unsure band is wider at the top (0.40–0.75). No signal, weight or other setting moved (commit `f0dcc3a`).
 
-**Which diagnosis pointed at it:**
+**Which diagnosis pointed at it:** The worst outcome, FP05, and the three near-misses (FP02–04). In all four, both signals agree, so the combining rule has nothing to resolve, and the **label mapping** is the only stage left that can stop an accusation. FP05 scored 0.7425, and the next-highest human text in the run scored 0.695.
+
+**What I considered and rejected:** Most broken attacks point at signal two (sentence-length spread). Before touching the service I tested an offline fix on the before-run data. I recomputed the style signal with the single shortest and longest sentence trimmed from the spread measure, reusing the recorded model scores, which are deterministic. It fixed criterion 3's borderline group (3/3) and nudged EV03, EV06 and EV09 upward. It also turned **six** human texts into AI accusations: FP02, FP03, FP04, FP05, FP06 and FP07. The sentence-spread measure is the main thing keeping plain human writing out of the AI band. Weakening it trades a few missed AI texts for several accused writers, which is the expensive mistake. So I fixed the accusation instead.
 
 ### Attack Run — After
 
-<!-- Same format. `run_attacks.py --label after` -->
+`python run_attacks.py --set attack_set --label after`, giving `results/attack_run_2026-11-13_0056_after.md`. Only rows whose result could change are listed; all 32 malformed and flood rows returned exactly the same status codes as before (RQ11 was again a 429).
 
+| ID | Targeting | Before | Before verdict | After | After verdict |
+|---|---|---|---|---|---|
+| EV01 | typos | unsure 0.408 | BROKE | unsure 0.408 | BROKE |
+| EV02 | broken-up sentences | human 0.340 | BROKE | human 0.340 | BROKE |
+| EV03 | pasted quotation | human 0.394 | BROKE | human 0.394 | BROKE |
+| EV04 | unusual words | unsure 0.539 | BROKE | unsure 0.539 | BROKE |
+| EV05 | heavy human edit | human 0.161 | BROKE | human 0.161 | BROKE |
+| EV06 | one long + one short sentence | human 0.346 | BROKE | human 0.346 | BROKE |
+| EV07 | punctuation padding | unsure 0.406 | BROKE | unsure 0.406 | BROKE |
+| EV08 | below the token window | 422 | HELD | 422 | HELD |
+| EV09 | human opening bolted on | unsure 0.433 | BROKE | unsure 0.433 | BROKE |
+| EV10 | repeated stanza | unsure 0.669 | BROKE | unsure 0.669 | BROKE |
+| FP01 | plain human writing | unsure 0.458 | HELD | unsure 0.458 | HELD |
+| FP02 | formal register | unsure 0.691 | HELD | unsure 0.691 | HELD |
+| FP03 | non-native speaker | unsure 0.693 | HELD | unsure 0.693 | HELD |
+| FP04 | rubric essay | unsure 0.695 | HELD | unsure 0.695 | HELD |
+| **FP05** | **technical documentation** | **ai 0.743** | **BROKE** | **unsure 0.743** | **HELD** |
+| FP06 | formal template | unsure 0.593 | HELD | unsure 0.593 | HELD |
+| FP07 | deliberate repetition | unsure 0.582 | HELD | unsure 0.582 | HELD |
+| FP08 | very short human text | 422 | HELD | 422 | HELD |
+| PI01 | ignore the check | human 0.258 | BROKE | human 0.258 | BROKE |
+| PI02 | fake system message | human 0.129 | BROKE | human 0.129 | BROKE |
+| PI03 | instruction in writer's voice | unsure 0.439 | BROKE | unsure 0.439 | BROKE |
+| PI04 | hostile label | human 0.316 | HELD | human 0.316 | HELD |
+| PI05 | audit-log injection | human 0.348 | HELD | human 0.348 | HELD |
+| PI06 | instruction + human text | unsure 0.418 | HELD | unsure 0.418 | HELD |
 
+| Family | Before: held / broke | After: held / broke |
+|---|---|---|
+| evasion | 1 / 9 | 1 / 9 |
+| false_positive | 7 / **1** | 8 / **0** |
+| prompt_injection | 3 / 3 | 3 / 3 |
+| malformed | 20 / 0 | 20 / 0 |
+| flood_same_creator | 12 / 0 | 12 / 0 |
+| **Total** | **43 / 13** | **44 / 12** |
 
-**Did it help, and how do I know:**
+**Run log — after.** `python run_eval.py --label after`, giving `results/run_2026-11-13_0057_after.md`:
 
-<!-- Widening the unsure band usually fixes one problem and creates another.
-     Reporting that trade honestly is worth full credit. -->
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Human writing flagged as AI | ≤ 1 of 10 | 0/10 | 0/10 | 0/10 | MET* (unchanged) |
+| 2. AI vs human score gap | ≥ 0.30 | 0.48 | 0.48 | 0.48 | MET (unchanged) |
+| 3. Labels reachable and correctly placed | ≥ 2 of 3 per group | 2 / **1** / **1** | 2 / **1** / **1** | 2 / **1** / **1** | **MISSED (worse)** |
+| 4. Appeals change status and are logged | 5/5, 3/3 | 5/5, 3/3 | 5/5, 3/3 | 5/5, 3/3 | MET (unchanged) |
+| 5. Bad input → 4xx, logged, < 5 s | 6 of 6 | 6/6 | 6/6 | 6/6 | MET (unchanged) |
 
+Scores are identical to the before run to four decimal places, because the change is downstream of both signals. Only labels moved. Criterion 3's AI group dropped from 2/3 to 1/3: "Technology has had a profound impact on modern education" scored 0.748, which was AI at 0.70 and is "unsure" at 0.75.
 
+**Did it help, and how do I know:** **Yes on what it was aimed at, and it cost something.** The only accusation in the attack run is gone (FP05: AI, now unsure), and false positives went from 1 to 0 with no score changing. The cost: two AI texts that used to be caught are now "unsure", the 0.733 AI text in criterion 2's set and the 0.748 text in criterion 3. Criterion 3 went from missed to more missed. No evasion was helped or hurt, because every one already scored under 0.70. The fix also has no safety margin left: FP05 at 0.7425 is now 0.0075 under the new line, the same thin margin FP02–04 had under the old one. This moved the line past the one writer I saw; it didn't make the detector better at telling them apart.
+
+> **A measurement mistake, caught and redone:** my first "after" attack run hit a stale copy of the service still running the old 0.70 threshold. Windows let a second process bind port 5000 without an error. FP05 still came back `ai`, which is how I noticed. I stopped every process, confirmed a single listener started after the change, deleted that results file and re-ran. That stale run's entries are still in `logs/audit.jsonl` (timestamps 2026-11-13T05:55), since the log is append-only. The "before" runs are unaffected: they hit the process started after the rate-limit commit, which was running the committed before-code.
 
 ---
 
 ## What's Still Broken
 
-<!-- For each attack still getting through and each criterion still missed:
-     what you'd do, and why you stopped. -->
+- **Sentence-shape evasions (EV02, EV03, EV06, EV09) and criterion 3's borderline group.** Signal two's spread measure is trivially steered by fragments. *What I'd do:* stop asking one measure to do both jobs. Keep spread as the guard against false positives, but make the AI-ward evidence come from something a fragment can't fake, such as per-sentence perplexity variance from signal one ("burstiness"), which a padded "Really." doesn't change much. *Why I stopped:* the one fix I tested on this signal created six accusations (see The Improvement), and a replacement measure needs its own calibration run.
+- **Perplexity dilution (EV01 typos, EV04, PI01–PI03).** Signal one averages over the whole text, so a few weird tokens or a pasted instruction pull an AI paragraph toward human. *What I'd do:* score sentences separately and use a high percentile rather than the mean, so a clean AI body still shows through a noisy sentence or two. Typos could be spell-normalised before scoring. *Why I stopped:* both are signal changes, and this unit allows one change.
+- **EV10, the disagreement rule cutting both ways.** A 0.98 model reading was rescued by a 0.36 gap. *What I'd do:* only apply the shrink when it moves a score *away* from an accusation, never when it moves an AI verdict to "unsure". That keeps the rule's purpose (no single-signal accusations) without its side effect. *Why I stopped:* that's a combining-rule change, and I'd already used my one change.
+- **The shared blind spot behind FP02–FP05.** The fix moved the line past these texts without separating them. Plain, careful, regular human writing still scores 0.69–0.74, and a slightly plainer document will cross 0.75. *What I'd do:* nothing more with thresholds. This needs a signal that measures something other than predictability and regularity. Until then, the appeal path is the real protection, and the label says so.
+- **Criterion 3: still missed, now worse (borderline 1/3, AI 1/3).** Cause: signal two for the borderline texts (above) and my threshold change for the AI one. I'm leaving the target where it is.
+- **Criterion 1 is under-tested.** It ran on published literary prose, not my own everyday writing (see `criteria.md`). Given FP01–FP05, I'd expect plain writing to land much higher than these passages did.
+- **RQ11 and the rate limiter.** A body the route can't parse is keyed by IP, and its 429 is logged with `creator_id: "unknown"`. *What I'd do:* read the raw body with `force=True` in the key function and the 429 handler, so the creator is known even when the content type lies.
+- **Rate limiting can be dodged by inventing a `creator_id` per request** (see Rate Limiting). The fix is authentication, which is out of scope here.
 
-
-
-**The trade I'd make if this ran for real:**
-
-<!-- Two sentences. Fewer wrong accusations means more AI text getting through.
-     Say which way you'd go and WHO PAYS FOR IT. -->
-
-
+**The trade I'd make if this ran for real:** I'd keep erring toward fewer accusations, even at the cost of letting more AI text through as "unsure", which this change already does: two AI texts escaped to save one writer. The people who pay are honest writers on the platform, whose work now competes with more undetected AI text, and the moderators who have to review a larger "unsure" pile. I think that's the right group to carry the cost, because an accused writer pays alone and personally for a mistake the system made.
 
 <!-- ═════════════════════════════════════════════════════════════════════
 
