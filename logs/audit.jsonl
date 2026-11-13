@@ -497,3 +497,6 @@
 {"timestamp": "2026-11-13T05:57:05+00:00", "creator_id": "eval_bad_number", "event": "rejected", "status": "rejected", "reason": "missing_text", "http_status": 400}
 {"timestamp": "2026-11-13T05:57:05+00:00", "creator_id": "eval_bad_huge", "event": "rejected", "status": "rejected", "reason": "text_too_long", "http_status": 413, "text_length": 250000}
 {"timestamp": "2026-11-13T05:57:05+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "6 per 1 minute"}
+{"timestamp": "2026-11-13T06:00:27+00:00", "creator_id": "chk", "event": "rejected", "status": "rejected", "reason": "empty_text", "http_status": 400}
+{"timestamp": "2026-11-13T06:00:27+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "invalid_json", "http_status": 400}
+{"timestamp": "2026-11-13T06:00:27+00:00", "creator_id": "chk", "event": "rejected", "status": "rejected", "reason": "missing_text", "http_status": 400}
