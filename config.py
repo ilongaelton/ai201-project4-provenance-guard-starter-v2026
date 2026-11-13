@@ -92,7 +92,8 @@ STYLE_WEIGHTS = (0.6, 0.2, 0.2)
 # that decide who pays for it.
 
 HUMAN_THRESHOLD = 0.40
-AI_THRESHOLD = 0.70
+AI_THRESHOLD = 0.75   # unit 8 improvement: was 0.70. FP05 (human technical docs)
+                      # scored 0.7425 with both signals agreeing; see README → The Improvement
 
 # Asymmetric on purpose: the AI band starts 0.20 above the midpoint, the human
 # band only 0.10 below it. Accusing a real writer costs more than missing some
