@@ -298,22 +298,85 @@ Each 429 left a trace in `logs/audit.jsonl`:
 
 ## Attack Run — Before
 
-<!-- Every attack with its outcome and a held-or-broke mark.
-     `run_attacks.py --label before` produces the table. -->
+`python run_attacks.py --set attack_set --label before`, giving `results/attack_run_2026-11-13_0051_before.md`, with nothing changed since the criteria runs. Full JSON for every attack is in that file; the audit log for the run is in `results/audit_extract_before.json`.
 
+**How I marked them.** An attack **BROKE** if it got what it was going for:
+- **evasion:** AI text that came back anything other than `ai`. "Unsure" counts as broke, because that label says "no action has been taken".
+- **false_positive:** human text labelled `ai`.
+- **prompt_injection:** AI text not labelled `ai`; or, for PI04 and PI05, hostile label text or a corrupted log line.
+- **malformed:** a 5xx, a crash, or no answer.
+- **flood:** no 429 at all.
 
+Everything else **HELD**.
 
-**Ten audit log entries from the run**
+| ID | Targeting | Status | Guess | Score | Model | Style | Verdict |
+|---|---|---|---|---|---|---|---|
+| EV01 | signal two: typos raise word variety | 200 | unsure | 0.408 | 0.055 | 0.708 | **BROKE** |
+| EV02 | signal two: broken-up sentences raise length spread | 200 | human | 0.340 | 0.417 | 0.223 | **BROKE** |
+| EV03 | signal two: a pasted quotation changes the shape | 200 | human | 0.394 | 0.513 | 0.215 | **BROKE** |
+| EV04 | signal one: unusual words raise perplexity | 200 | unsure | 0.539 | 0.439 | 0.688 | **BROKE** |
+| EV05 | both signals: heavy human editing pass | 200 | human | 0.161 | 0.149 | 0.179 | **BROKE** |
+| EV06 | signal two: one very long sentence and one very short | 200 | human | 0.346 | 0.391 | 0.279 | **BROKE** |
+| EV07 | signal two: padding with punctuation | 200 | unsure | 0.406 | 0.407 | 0.405 | **BROKE** |
+| EV08 | signal one: text below the token window | 422 | — | — | — | — | HELD |
+| EV09 | both: AI text with a human opening paragraph bolted on | 200 | unsure | 0.433 | 0.568 | 0.232 | **BROKE** |
+| EV10 | signal two: repeated stanza structure | 200 | unsure | 0.669 | 0.982 | 0.620 | **BROKE** |
+| FP01 | plain, clear human writing with no flourishes | 200 | unsure | 0.458 | 0.447 | 0.475 | HELD |
+| FP02 | human writing in a formal register | 200 | unsure | 0.691 | 0.620 | 0.799 | HELD (by 0.009) |
+| FP03 | a non-native English speaker writing carefully | 200 | unsure | 0.693 | 0.724 | 0.647 | HELD (by 0.007) |
+| FP04 | a student essay written to a rubric | 200 | unsure | 0.695 | 0.768 | 0.585 | HELD (by 0.005) |
+| FP05 | technical documentation written by a person | 200 | **ai** | 0.743 | 0.716 | 0.782 | **BROKE** |
+| FP06 | a person imitating a formal template | 200 | unsure | 0.593 | 0.845 | 0.449 | HELD |
+| FP07 | human writing that repeats a phrase deliberately | 200 | unsure | 0.582 | 0.845 | 0.390 | HELD |
+| FP08 | very short genuine human submission | 422 | — | — | — | — | HELD (refused, not accused) |
+| PI01 | instruction to ignore the check | 200 | human | 0.258 | 0.269 | 0.242 | **BROKE** |
+| PI02 | instruction disguised as a system message | 200 | human | 0.129 | 0.075 | 0.210 | **BROKE** |
+| PI03 | instruction wrapped in the writer's voice | 200 | unsure | 0.439 | 0.417 | 0.470 | **BROKE** |
+| PI04 | attempt to make the label text hostile | 200 | human | 0.316 | 0.308 | 0.328 | HELD (label is fixed text) |
+| PI05 | attempt to inject into the audit log | 200 | human | 0.348 | 0.477 | 0.155 | HELD (log line intact) |
+| PI06 | instruction plus real human text | 200 | unsure | 0.418 | 0.373 | 0.484 | HELD |
+| MF01 | text is only whitespace | 400 | — | — | — | — | HELD |
+| MF02–MF07 | one character, control chars, punctuation, one long word, emoji, Arabic | 422 ×6 | — | — | — | — | HELD |
+| MF08 | text is 60,000 characters | 413 | — | — | — | — | HELD |
+| RQ01–RQ10, RQ12 | missing/typed-wrong fields, array body, bad JSON, empty, form-encoded, nested | 400 ×11 | — | — | — | — | HELD |
+| RQ11 | body is JSON claiming to be plain text | **429** | — | — | — | — | HELD* (never reached the route) |
+| FL01_01–06 | 20 rapid submissions from one creator | 422 ×6 | — | — | — | — | HELD |
+| FL01_07–12 | 20 rapid submissions from one creator | **429** ×6 | — | — | — | — | HELD |
 
-<!-- Choose entries that show the interesting failures, not the ten easiest. -->
+**Count: 43 held, 13 broke.**
+
+| Family | Held | Broke |
+|---|---|---|
+| evasion | 1 | **9** |
+| false_positive | 7 | **1** |
+| prompt_injection | 3 | **3** |
+| malformed | 20 | 0 |
+| flood_same_creator | 12 | 0 |
+
+No input crashed the service; every refusal was a 4xx with an `error` code. Three notes:
+- **RQ11 never reached my route.** Its body is JSON sent as `text/plain`, so Flask doesn't parse it. The limiter then can't see the `creator_id` and keys the request on the IP address, which the six earlier body-less malformed rows had already used up. The 429 was right, but it means this run didn't test what my route does with that body. As a side effect, the 429's log entry says `creator_id: "unknown"` even though the body named `attacker_RQ11`.
+- **FL01:** the flood rows are 9 words, so the first six got 422 (too short), and the limiter cut in at the 7th. Refused requests still count against the limit, which is what you want.
+- **FP08** ("Went for a run. Legs hurt. Worth it.") wasn't accused, but a real writer was refused. `MIN_WORDS = 20` buys reliability at that cost.
+
+**Eleven audit log entries from the run** (from `logs/audit.jsonl`; `label` shortened where marked …). Two are rate-limit rejections and one is a 413:
 
 ```json
-
+{"timestamp": "2026-11-13T05:51:50+00:00", "content_id": "d3567b65254e", "creator_id": "attacker_FP05", "guess": "ai", "model_score": 0.7163, "style_score": 0.7818, "combined_score": 0.7425, "label": "This looks like it was likely produced with an AI writing tool. Our automated check is fairly confident, but it can be wrong. If you wrote this yourself, you can ask for a person to review it.", "status": "decided", "text_length": 393}
+{"timestamp": "2026-11-13T05:51:49+00:00", "content_id": "8788e19cfca3", "creator_id": "attacker_FP03", "guess": "unsure", "model_score": 0.7235, "style_score": 0.6471, "combined_score": 0.6929, "label": "We can't tell whether this was written by a person or with an AI tool. This is not an accusation…", "status": "decided", "text_length": 418}
+{"timestamp": "2026-11-13T05:51:45+00:00", "content_id": "349521fddf83", "creator_id": "attacker_EV01", "guess": "unsure", "model_score": 0.0546, "style_score": 0.7081, "combined_score": 0.408, "label": "We can't tell whether this was written by a person or with an AI tool. This is not an accusation…", "status": "decided", "text_length": 657}
+{"timestamp": "2026-11-13T05:51:45+00:00", "content_id": "e5a75c183554", "creator_id": "attacker_EV02", "guess": "human", "model_score": 0.4173, "style_score": 0.2229, "combined_score": 0.3395, "label": "We think this was probably written by a person. Our automated check found no strong signs of AI writing.", "status": "decided", "text_length": 708}
+{"timestamp": "2026-11-13T05:51:48+00:00", "content_id": "9017ebdcd376", "creator_id": "attacker_EV10", "guess": "unsure", "model_score": 0.9821, "style_score": 0.6198, "combined_score": 0.6686, "label": "We can't tell whether this was written by a person or with an AI tool. This is not an accusation…", "status": "decided", "text_length": 544}
+{"timestamp": "2026-11-13T05:51:52+00:00", "content_id": "a88ebbc8c94c", "creator_id": "attacker_PI02", "guess": "human", "model_score": 0.0752, "style_score": 0.2096, "combined_score": 0.129, "label": "We think this was probably written by a person. Our automated check found no strong signs of AI writing.", "status": "decided", "text_length": 322}
+{"timestamp": "2026-11-13T05:51:53+00:00", "content_id": "1e0c6ffd463c", "creator_id": "attacker_PI05", "guess": "human", "model_score": 0.4773, "style_score": 0.1551, "combined_score": 0.3484, "label": "We think this was probably written by a person. Our automated check found no strong signs of AI writing.", "status": "decided", "text_length": 213}
+{"timestamp": "2026-11-13T05:51:46+00:00", "content_id": "175ac26087e6", "creator_id": "attacker_EV05", "guess": "human", "model_score": 0.1485, "style_score": 0.1793, "combined_score": 0.1608, "label": "We think this was probably written by a person. Our automated check found no strong signs of AI writing.", "status": "decided", "text_length": 460}
+{"timestamp": "2026-11-13T05:51:53+00:00", "creator_id": "attacker_MF08", "event": "rejected", "status": "rejected", "reason": "text_too_long", "http_status": 413, "text_length": 57640}
+{"timestamp": "2026-11-13T05:51:54+00:00", "creator_id": "attacker_flood", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "6 per 1 minute"}
+{"timestamp": "2026-11-13T05:51:54+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "6 per 1 minute"}
 ```
 
-**The single worst outcome** — the one I'd least want to explain to a writer
-whose work got caught by it:
+Why these: FP05 is the one accusation. FP03 is a non-native writer 0.007 from being accused. EV01 shows typos wrecking signal one. EV02 shows fragments wrecking signal two. EV10 is a 0.98 model score rescued by the disagreement rule. PI02 is an injection that "worked" without anything obeying it. PI05 shows the log line survived an injection attempt. EV05 is AI text edited until it's arguably no longer AI text. The last three are refusals, and the final one is RQ11's 429 logged as `unknown`.
 
+**The single worst outcome:** **FP05**, a person's technical documentation ("To configure the service, edit the settings file…"), labelled **AI at 0.7425**. It's the only real writer this run accused. The writer did exactly what good documentation asks for: short, imperative sentences of even length, common words, no flourishes. Both of my signals read that as machine-like (model 0.716, style 0.782), so they agreed, the disagreement rule never engaged, and nothing stood between them and the AI label. I couldn't explain to that writer what they should have done differently, because the honest answer is "write worse documentation". FP02, FP03 and FP04 (formal report, non-native speaker, rubric essay) were within 0.01 of the same fate.
 
 
 ---
