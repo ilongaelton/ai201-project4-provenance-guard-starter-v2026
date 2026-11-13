@@ -458,6 +458,12 @@ All three trials are identical, score for score. Neither signal is random (GPT-2
 
 **The overall pattern:** most broken attacks (and criterion 3) push the score *down*, mainly through signal two's sentence-spread measure. The one accusation pushes the score *up*, through the shared blind spot. These pull in opposite directions, which decides the fix (next section).
 
+**My own check of these diagnoses** (my answers to three questions about the draft above):
+
+- **FP05: I put it on the model signal, not the threshold.** The draft blames the label mapping, because both signals agreed. I think the root cause is earlier: GPT-2 finds plain, instructional writing predictable (0.716), and that's the signal mistaking clear human writing for machine writing. The threshold is only where that mistake became visible. My fix moved the threshold anyway, because a signal change was out of scope this unit, but it treats the symptom.
+- **EV01: I agree.** Misspelled words are rare to GPT-2, so perplexity jumps and the text reads as human to signal one, even though the attack was aimed at signal two.
+- **The fix: I'd keep the threshold change** rather than fix the style signal and accuse six real writers. Letting some AI text through is the cheaper mistake.
+
 <!-- For each miss AND each broken attack: the stage and the mechanism.
 
      Your service has five stages: the route, signal one, signal two, the
